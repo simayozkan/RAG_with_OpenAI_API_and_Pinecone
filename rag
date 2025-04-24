@@ -1,0 +1,231 @@
+# Install the openai package, locked to version 1.27
+!pip install openai==1.27
+
+# Install the pinecone-client package, locked to version 4.0.0
+!pip install pinecone-client==4.0.0
+
+# Install the langchain package, locked to version 0.1.19
+!pip install langchain==0.1.19
+
+# Install the langchain-openai package, locked to version 0.1.6
+!pip install langchain-openai==0.1.6
+
+# Update the langchain-pinecone package, locked to version 0.1.0
+!pip install langchain-pinecone==0.1.0
+
+# Update the tiktoken package, locked to version 0.7.0
+!pip install tiktoken==0.7.0
+
+# Update the typing_extensions package, locked to version 4.11.0
+!pip install typing_extensions==4.11.0
+
+
+# Import pandas as pd
+import pandas as pd
+
+# Import IMBD.csv. Assign to movies_raw.
+movies_raw = pd.read_csv("IMDB.csv")
+
+# Print the head of movies_raw
+movies_raw.head()
+
+# Rename primaryTitle, Description columns. Assign to movies.
+movies = movies_raw.rename(columns = {
+    "primaryTitle": "movie_title",
+    "Description": "movie_description",
+})
+
+# Add source column from tconst
+movies["source"] = "https://www.imdb.com/title/" + movies["tconst"]
+
+# Subset for titleType equal to "movie"
+movies = movies.loc[movies["titleType"] == "movie"]
+
+# Select movie_title, movie_description, source, genres columns
+movies = movies[["movie_title", "movie_description", "source", "genres"]]
+
+# Show the head of movies
+movies.head()
+
+# Import DataFrameLoader
+from langchain.document_loaders import DataFrameLoader
+
+# Create page content column
+movies["page_content"] = "Title: " + movies["movie_title"] + "\n" + \
+                         "Genre: " + movies["genres"] + "\n" + \
+                         "Description: " +movies["movie_description"]
+
+# Select page_content and source columns
+movies = movies[["page_content", "source"]]
+
+# Load the documents from the dataframe into docs
+# The page content column is 'movie_description'
+docs = DataFrameLoader(
+    movies,
+    page_content_column="page_content",
+).load()
+
+# Print the first 3 documents and the number of documents
+print(f"First 3 documents: {docs[:3]}")
+print(f"Number of documents: {len(docs)}") 
+
+
+
+# Import tiktoken
+import tiktoken
+
+# Create the encoder
+encoder = tiktoken.get_encoding("cl100k_base")
+
+# Create a list containing the number of tokens for each document
+tokens_per_doc = [len(encoder.encode(doc.page_content)) for doc in docs]
+
+# Show the estimated cost, which is the sum of the amount of tokens divided by 1000, times $0.0001
+total_tokens = sum(tokens_per_doc)
+cost_per_1000_tokens = 0.0001
+cost =  (total_tokens / 1000) * cost_per_1000_tokens
+cost
+
+
+# Import os and pinecone
+import os
+import pinecone
+
+# Set the pinecone api key from the environment variable. Assign to api_key.
+api_key=os.getenv("PINECONE_API_KEY")
+
+# Initialize pinecone using the `PINECONE_API_KEY` variable. 
+pc = pinecone.Pinecone(api_key=api_key)
+
+
+# Import os and pinecone
+# Use this index name
+index_name = "imdb-movies"
+
+# List the names of available indexes. Assign to existing_index_names.
+existing_index_names = [idx.name for idx in pc.list_indexes().indexes]
+
+# First check that the given index does not exist yet
+if index_name not in existing_index_names:
+    # Create the 'imbd-movies' index with cosine metric, 1536 dims, serverless spec: aws in us-east-1
+    pc.create_index(
+        name=index_name,
+        metric='cosine',
+        dimension=1536,
+        spec=pinecone.ServerlessSpec(cloud="aws", region="us-east-1")
+    )
+
+
+
+# From the langchain_openai package, import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings
+
+# From the langchain_pinecone package, import PineconeVectorStore
+from langchain_pinecone import PineconeVectorStore
+
+# Create the embeddings object
+embeddings = OpenAIEmbeddings()
+
+# Create an index from its name
+index = pc.Index(index_name)
+
+
+
+# Count the number of vectors in the index
+n_vectors = index.describe_index_stats()['total_vector_count']
+print(f"There are {n_vectors} vectors in the index already.")
+
+# Check if there is already some data in the index on Pinecone
+if n_vectors > 0:
+    # If there is, get the documents to search from the index. Assign to docsearch.
+    docsearch = PineconeVectorStore.from_existing_index(index_name, embeddings)
+else:
+    # If not, fill the index from the documents and return those docs to assign to docsearch
+    docsearch = PineconeVectorStore.from_documents(docs, embeddings, index_name=index_name)
+
+# Define a question about movies to ask
+question = "What's a good movie about an epic viking?"
+    
+# Convert the vector database to a retriever and get the relevant documents for a question
+print("These are the documents most relevant to the question:")
+docsearch.as_retriever().invoke(question)
+
+
+
+# Import PromptTemplate
+from langchain.prompts import PromptTemplate
+
+# Read/adapt the prompts below at will
+DOCUMENT_PROMPT = """{page_content}
+IMDB link: {source}
+========="""
+
+QUESTION_PROMPT = """Given the following extracted parts of a movie database and a question, create a final answer with the IMDB link as source ("SOURCE").
+If you don't know the answer, just say that you don't know. Don't try to make up an answer.
+ALWAYS return a "SOURCE" part in your answer.
+
+QUESTION: What's a good movie about a robot to watch with my kid?
+=========
+Title: A.I. Artificial Intelligence
+Genre: Drama,Sci-Fi
+Description: A robotic boy, the first programmed to love, David (Haley Joel Osment) is adopted as a test case by a Cybertronics employee (Sam Robards) and his wife (Frances O'Connor). Though he gradually becomes their child, a series of unexpected circumstances make this life impossible for David. Without final acceptance by humans or machines, David embarks on a journey to discover where he truly belongs, uncovering a world in which the line between robot and machine is both vast and profoundly thin.
+IMDB link: https://www.imdb.com/title/tt0212720
+=========
+Title: I, Robot
+Genre: Action,Mystery,Sci-Fi
+Description: In 2035, highly intelligent robots fill public service positions throughout the world, operating under three rules to keep humans safe. Despite his dark history with robotics, Detective Del Spooner (Will Smith) investigates the alleged suicide of U.S. Robotics founder Alfred Lanning (James Cromwell) and believes that a human-like robot (Alan Tudyk) murdered him. With the help of a robot expert (Bridget Moynahan), Spooner discovers a conspiracy that may enslave the human race.
+IMDB link: https://www.imdb.com/title/tt0343818
+=========
+Title: The Iron Giant
+Genre: Action,Adventure,Animation
+Description: In this animated adaptation of Ted Hughes' Cold War fable, a giant alien robot (Vin Diesel) crash-lands near the small town of Rockwell, Maine, in 1957. Exploring the area, a local 9-year-old boy, Hogarth, discovers the robot, and soon forms an unlikely friendship with him. When a paranoid government agent, Kent Mansley, becomes determined to destroy the robot, Hogarth and beatnik Dean McCoppin (Harry Connick Jr.) must do what they can to save the misunderstood machine.
+IMDB link: https://www.imdb.com/title/tt0129167
+=========
+FINAL ANSWER: 'The Iron Giant' is an animated movie about a friendship between a robot and a kid. It would be a good movie to watch with a kid.
+SOURCE: https://www.imdb.com/title/tt0129167
+
+QUESTION: {question}
+=========
+{summaries}
+FINAL ANSWER:"""
+
+# Create prompt template objects
+document_prompt = PromptTemplate.from_template(DOCUMENT_PROMPT)
+question_prompt = PromptTemplate.from_template(QUESTION_PROMPT)
+
+
+# From the langchain.chains module, import RetrievalQAWithSourcesChain
+from langchain.chains import RetrievalQAWithSourcesChain
+
+# From the langchain_openai package, import ChatOpenAI
+from langchain_openai import ChatOpenAI
+
+# Create an OpenAI client LLM model. Assign to llm.
+llm = ChatOpenAI(model_name="gpt-3.5-turbo-1106", temperature=0)
+
+
+
+# Create the QA bot LLM chain
+qa_with_sources = RetrievalQAWithSourcesChain.from_chain_type(
+    chain_type="stuff",
+    llm=llm,
+    chain_type_kwargs={
+        "document_prompt": document_prompt,
+        "prompt": question_prompt,
+    },
+    retriever=docsearch.as_retriever(),
+)
+
+# Invoke qa_with_sources to ask the LLM the question about movies
+qa_with_sources.invoke(question)
+
+
+# Import langchain
+import langchain
+
+# Enable debug logging
+langchain.debug = True
+
+# Invoke qa_with_sources to ask the LLM the same question about movies
+qa_with_sources.invoke(question)
+
